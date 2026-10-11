@@ -12,7 +12,7 @@
 #define E32E28_TFT_SCLK  14
 #define E32E28_TFT_CS    15
 #define E32E28_TFT_DC     2
-#define E32E28_TFT_MISO  12   // ILI9341 SDO; read only by _detectPanel(), then left off the bus
+#define E32E28_TFT_MISO  12   // panel SDO; read only by _detectPanel(), then left off the bus
 #define E32E28_TFT_BL    21   // backlight, active HIGH
 // No reset GPIO: holding GPIO12 LOW resets neither panel (bench, 2026-10-10),
 // so the init sequences start with a software reset.
@@ -76,12 +76,17 @@ void chipguy_ESP32_32E_2_8inch_display::_data8(uint8_t val) {
 
 // ── Panel detection ────────────────────────────────────────────────────────
 // Runs before the SPI peripheral owns the pins, so it bit-bangs (~200 kHz,
-// mode 0).  The ILI9341 board wires the panel's SDO to GPIO12; the ST7789
-// board does not, and there GPIO12 just follows its pull.  The ILI9341's ID
+// mode 0).  Both boards wire the panel's SDO to GPIO12.  The ILI9341's ID
 // only comes back through the undocumented index register: write 0xD9 with
 // 0x10+n, then a one-byte 0xD3 read returns ID byte n (00 93 41 for n=1..3) —
-// the readcommand8() method Adafruit and TFT_eSPI use.  Reading under both
-// pulls separates "the panel answered" from "the pin floated".
+// the readcommand8() method Adafruit and TFT_eSPI use.  The ST7789 has no
+// 0xD3, leaves SDO high-Z, and GPIO12 just follows its pull.  Reading under
+// both pulls separates "the panel answered" from "the pin floated".
+//
+// An ST7789 that did answer 0xD3 with something would land in neither case,
+// so the fallback is RDDID 0x04, which the ST7789 does answer: 85 85 52 per
+// the datasheet, 81 81 B3 on the board probed (bench, 2026-10-11).  The
+// ILI9341s return 00 00 00 there (no module ID programmed).
 
 static uint8_t _e32e28_bbXfer(uint8_t out) {
     uint8_t in = 0;
@@ -115,6 +120,21 @@ static uint8_t _e32e28_bbReadIdx(uint8_t idx) {
     return v;
 }
 
+// RDDID 0x04: one dummy clock after the command, then three ID bytes.
+static void _e32e28_bbReadRDDID(uint8_t out[3]) {
+    gpio_set_level((gpio_num_t)E32E28_TFT_CS, 0);
+    gpio_set_level((gpio_num_t)E32E28_TFT_DC, 0);
+    _e32e28_bbXfer(0x04);
+    gpio_set_level((gpio_num_t)E32E28_TFT_DC, 1);
+    gpio_set_level((gpio_num_t)E32E28_TFT_SCLK, 1);
+    delayMicroseconds(2);
+    gpio_set_level((gpio_num_t)E32E28_TFT_SCLK, 0);
+    delayMicroseconds(2);
+    for (int i = 0; i < 3; i++) out[i] = _e32e28_bbXfer(0x00);
+    gpio_set_level((gpio_num_t)E32E28_TFT_CS, 1);
+    delayMicroseconds(5);
+}
+
 e32e28_panel_t chipguy_ESP32_32E_2_8inch_display::_detectPanel() {
     gpio_set_direction((gpio_num_t)E32E28_TFT_MOSI, GPIO_MODE_OUTPUT);
     gpio_set_direction((gpio_num_t)E32E28_TFT_SCLK, GPIO_MODE_OUTPUT);
@@ -124,25 +144,35 @@ e32e28_panel_t chipguy_ESP32_32E_2_8inch_display::_detectPanel() {
     gpio_set_direction((gpio_num_t)E32E28_TFT_MISO, GPIO_MODE_INPUT);
 
     uint8_t id[2][2];
+    uint8_t rddid[2][3];
     const gpio_pull_mode_t pulls[2] = {GPIO_PULLUP_ONLY, GPIO_PULLDOWN_ONLY};
     for (int p = 0; p < 2; p++) {
         gpio_set_pull_mode((gpio_num_t)E32E28_TFT_MISO, pulls[p]);
         delayMicroseconds(50);
         id[p][0] = _e32e28_bbReadIdx(2);
         id[p][1] = _e32e28_bbReadIdx(3);
+        _e32e28_bbReadRDDID(rddid[p]);
     }
     // Leave GPIO12 as the chip's reset default: an input with pull-down.
-    // It is the MTDI strapping pin, and on the ST7789 board nothing else
-    // drives it.
+    // It is the MTDI strapping pin, and the panel only drives it during reads.
 
     if (id[0][0] == 0x93 && id[0][1] == 0x41 && id[1][0] == 0x93 && id[1][1] == 0x41)
         return E32E28_PANEL_ILI9341;
     if (id[0][0] == 0xFF && id[0][1] == 0xFF && id[1][0] == 0x00 && id[1][1] == 0x00)
         return E32E28_PANEL_ST7789;
-    // Something answered, but not with the ILI9341's ID.  Keep the original
-    // behaviour and say so.
-    Serial.printf("e32e28 display: unrecognised panel ID %02X %02X / %02X %02X; assuming ILI9341\n",
-                  id[0][0], id[0][1], id[1][0], id[1][1]);
+    // Something answered 0xD3, but not with the ILI9341's ID.  Match RDDID
+    // bytes 2 and 3 (version, driver ID) under both pulls; byte 1 is the
+    // module vendor and varies.
+    static const uint8_t st7789Ids[][2] = {{0x85, 0x52}, {0x81, 0xB3}};
+    for (const auto &st : st7789Ids) {
+        if (rddid[0][1] == st[0] && rddid[0][2] == st[1] &&
+            rddid[1][1] == st[0] && rddid[1][2] == st[1])
+            return E32E28_PANEL_ST7789;
+    }
+    Serial.printf("e32e28 display: unrecognised panel ID %02X %02X / %02X %02X, "
+                  "RDDID %02X %02X %02X / %02X %02X %02X; assuming ILI9341\n",
+                  id[0][0], id[0][1], id[1][0], id[1][1],
+                  rddid[0][0], rddid[0][1], rddid[0][2], rddid[1][0], rddid[1][1], rddid[1][2]);
     return E32E28_PANEL_ILI9341;
 }
 

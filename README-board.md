@@ -29,9 +29,10 @@ Same size and touch overlay, same pins, but different color order (BGR vs RGB) a
 mirrored columns. Driving one with the other's settings gives a mirror-image picture
 with red and blue swapped.
 
-`display.begin()` detects which panel is fitted. It reads the ILI9341's ID over
-**GPIO12**. The ILI9341 board wires the panel's data-out pin there. The ST7789 board
-doesn't, so silence on GPIO12 means ST7789. Detection takes well under a millisecond,
+`display.begin()` detects which panel is fitted. Both boards wire the panel's data-out
+pin to **GPIO12**, and the library asks for the ILI9341's ID there. The ST7789 doesn't
+answer that question, so silence means ST7789. If something unexpected answers, the
+library asks the ST7789's own ID question as a second check. Detection takes well under a millisecond,
 and rotation, color and touch are then correct for both: all four rotations and the
 touch mapping were checked on one board of each kind (2026-10-10).
 
@@ -42,8 +43,10 @@ display.setPanel(E32E28_PANEL_ST7789);   // before begin(): skip detection, forc
 ```
 
 A force is only needed if detection gets it wrong. One case: an ILI9341 board whose
-data-out isn't wired to GPIO12 would read as ST7789. None like that is known. If the
-ID is something unrecognized, the library prints a line on Serial and assumes ILI9341.
+data-out isn't wired to GPIO12 would read as ST7789. None like that is known. If
+neither ID is recognized, the library prints the bytes on Serial and assumes ILI9341.
+Detection was checked on 2026-10-11 on one board of each kind, and on an
+ESP32-2432S028 (ILI9341), which runs this library too.
 
 **GPIO12 is not a display reset** on either board: holding it LOW did nothing to
 either panel. The driver issues a software reset instead. Where the panel's hardware
@@ -89,7 +92,7 @@ The library and the board's fixed hardware own nearly every GPIO on a classic ES
 
 | Owner | GPIOs |
 |---|---|
-| Display (this library, HSPI) | 13 (MOSI), 14 (SCK), 15 (CS), 2 (DC), 21 (backlight), and 12 (panel data-out on ILI9341 boards; read once in `begin()` to detect the panel) |
+| Display (this library, HSPI) | 13 (MOSI), 14 (SCK), 15 (CS), 2 (DC), 21 (backlight), and 12 (panel data-out; read once in `begin()` to detect the panel) |
 | Touch (this library, bit-banged) | 25 (CLK), 32 (MOSI), 33 (CS), 39 (MISO), 36 (pen-down, input) |
 | microSD slot (VSPI — the default `SPI` object) | 5 (CS), 18, 19, 23 |
 | SPI header | the same 18, 19, 23, plus 27 (CS) |

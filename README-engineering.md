@@ -76,16 +76,27 @@ read directly is undriven. The `0xD9` index trick (write `0x10+n`, then read one
 `0xD3`) returns `41 00 93 41` for n = 0..3. RDDID `0x04` and RDID1–3 `0xDA`–`0xDC`
 return `00`: no module ID is programmed.
 
-**ST7789 board.** Every read, including the `0x04` RDDID that would carry `85 85 52`, came
-back `FF` under pull-up and `00` under pull-down: nothing drives GPIO12. The panel's SDO
-is not wired to it. With no pull, GPIO12 idled LOW on both boards, and with the pull-up
-HIGH. So neither board has an external pull on it.
+**ST7789 board.** On 2026-10-10 every read came back `FF` under pull-up and `00` under
+pull-down, which was taken to mean SDO is not wired to GPIO12. **That was wrong.** A
+bit-banged re-probe on 2026-10-11 (the one `begin()` uses, about 200 kHz, CS held across
+command and reply) shows the panel does drive GPIO12. RDDID `0x04` returned `81 81 B3`, and
+RDDST `0x09` returned `00 61 00 00`, the power-on default, both identical under both pulls.
+Without the dummy clock RDDID reads `40 C0 D9`, the same bits one place late, so the
+alignment is right. The datasheet ID is `85 85 52`. `81 81 B3` is either a different module
+programming or an ST7789-compatible controller; which one is **TODO (bench)**. The panel
+leaves `0xD3` and the `0xD9` index trick undriven, so those still read as the pull. Why
+the first probe saw nothing was not pinned down; it used the hardware SPI at 1 MHz.
+With no pull, GPIO12 idled LOW on both boards, and with the pull-up HIGH. So neither
+board has an external pull on it.
+
+The ILI9341 board's RDDST before init is also `00 61 00 00`, the power-on default, so its
+panel is reset along with the ESP32. That supports the EN-tied reset inferred below.
 
 **Reset test.** GPIO12 was driven LOW for 2 s, then HIGH, and the panel was left 3 s
 before re-init. Neither picture changed (observed). On the ILI9341 board RDDPM read
 `9C` before and after, so the controller kept its state. GPIO12 is therefore not
 `TFT_RST` on either board. The library's earlier reset pulse on GPIO12 was harmless on
-the ILI9341 board (SDO is high-Z outside reads) and a no-op on the ST7789 board. Init now
+both boards (SDO is high-Z outside reads). Init now
 starts with SWRESET `0x01`. That the panel reset is tied to EN, as on the 2432S028
 (schematic-description §1.6 there), is **inferred**.
 
@@ -105,9 +116,14 @@ The touch overlays read alike, so the touch driver needs no per-panel handling.
 
 **Detection in `begin()`.** It runs before `spi_bus_initialize()` claims the pins, as a
 bit-banged exchange at about 200 kHz. It reads index 2 and 3 of the `0xD9`/`0xD3` trick
-under pull-up and then pull-down. `93 41` under both pulls means ILI9341. `FF FF` / `00 00`
-means nothing answered, so ST7789. Anything else logs the bytes and falls back to
-ILI9341. GPIO12 is left as an input with pull-down, its reset default. It is the MTDI
+under pull-up and then pull-down, and RDDID `0x04` (one dummy clock, three bytes) under
+each. `93 41` under both pulls means ILI9341. `FF FF` / `00 00` means nothing answered
+`0xD3`, so ST7789. Anything else is checked against RDDID bytes 2–3: `85 52` (datasheet)
+or `81 B3` (the board above) under both pulls means ST7789. The ILI9341s return
+`00 00 00` there, since no module ID is programmed. If neither matches, the bytes are
+logged and detection falls back to ILI9341. Verified 2026-10-11 on `…6890C8` (ILI9341),
+`…8D3D10` (ST7789) and an ESP32-2432S028 `…1F003C` (ILI9341, same `41 00 93 41` and
+RDDID `00 00 00`). GPIO12 is left as an input with pull-down, its reset default. It is the MTDI
 strapping pin, which must not be held HIGH at reset (1.8 V flash).
 
 **ST7789 init.** SWRESET, SLPOUT, COLMOD `0x55`, INVOFF, NORON and DISPON on power-on

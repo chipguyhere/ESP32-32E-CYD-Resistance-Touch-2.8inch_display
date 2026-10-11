@@ -10,10 +10,10 @@
  * README-sound.md for those.
  *
  * The board ships with either of two 240x320 panels behind the same
- * silkscreen: an ILI9341 (BGR, columns mirrored, SDO wired to GPIO12) or an
- * ST7789 (RGB, columns not mirrored, SDO not wired).  begin() tells them apart
- * by reading the ILI9341's ID over GPIO12: an answer means ILI9341, silence
- * means ST7789.  setPanel() overrides the detection.
+ * silkscreen: an ILI9341 (BGR, columns mirrored) or an ST7789 (RGB, columns
+ * not mirrored).  Both wire SDO to GPIO12.  begin() tells them apart by
+ * reading the ILI9341's ID over GPIO12, which the ST7789 doesn't answer, with
+ * the ST7789's RDDID as a fallback.  setPanel() overrides the detection.
  *
  * Drives the panel through the ESP-IDF SPI master driver
  * (every transaction goes through spi_device_polling_transmit, so the bus is
@@ -23,7 +23,7 @@
  *
  * Board wiring (fixed on the ESP32-32E 2.8"):
  *   TFT_MOSI 13   TFT_SCLK 14   TFT_CS 15   TFT_DC 2
- *   TFT_MISO 12 (ILI9341 boards only; read once at begin() for detection)
+ *   TFT_MISO 12 (panel SDO; read once at begin() for detection)
  *   TFT_BL   21 (backlight, active HIGH)
  *   Panel reset is not on a GPIO (GPIO12 was tested and does not reset either
  *   panel), so the driver issues a software reset instead.
